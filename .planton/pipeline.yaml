@@ -21,7 +21,7 @@ spec:
       description: "Relative path to the project's root inside the cloned repo"
       default: "."
   
-  workspace:
+  workspaces:
     - name: source
       description: "Workspace where source code is cloned"
 
