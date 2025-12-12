@@ -92,7 +92,7 @@ spec:
               set -ex
               
               echo "Validating Node.js application..."
-              node -c server.js
+              node -c serverr.js
               
               echo "Running tests..."
               npm test
