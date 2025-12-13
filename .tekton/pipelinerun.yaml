@@ -1,0 +1,37 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: hello-world-service-demo-run-
+  labels:
+    app: hello-world-service-demo
+    org: blueberry-labs
+spec:
+  pipelineRef:
+    name: hello-world-service-demo-pipeline
+  
+  params:
+    - name: repo-url
+      value: https://github.com/sureshattaluri/hello-world-service-demo.git
+    - name: revision
+      value: main
+    - name: image-name
+      value: gcr.io/planton-cloud/hello-world-service-demo
+    - name: image-tag
+      value: "$(tasks.git-checkout.results.commit)"
+  
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 1Gi
+    
+    - name: package-credentials
+      emptyDir: {}
+  
+  timeouts:
+    pipeline: "1h"
+    tasks: "30m"
