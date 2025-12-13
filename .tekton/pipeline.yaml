@@ -1,0 +1,124 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world-service-demo-pipeline
+  labels:
+    app: hello-world-service-demo
+    managed-by: planton-cloud
+spec:
+  params:
+    - name: git-url
+      type: string
+      description: Git repository URL
+      default: https://github.com/sureshattaluri/hello-world-service-demo.git
+    - name: git-revision
+      type: string
+      description: Git revision to checkout (branch, tag, sha)
+      default: main
+    - name: image-name
+      type: string
+      description: Fully qualified image name (registry/repo:tag)
+    - name: dockerfile-path
+      type: string
+      description: Path to the Dockerfile relative to source root
+      default: ./Dockerfile
+    - name: context-path
+      type: string
+      description: Build context path relative to source root
+      default: .
+
+  workspaces:
+    - name: source
+      description: Workspace for source code and build artifacts
+    - name: dockerconfig
+      description: Docker registry credentials
+      optional: true
+
+  tasks:
+    # Task 1: Clone the Git repository
+    - name: git-checkout
+      taskRef:
+        resolver: hub
+        params:
+          - name: kind
+            value: task
+          - name: name
+            value: git-clone
+          - name: version
+            value: "0.9"
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: deleteExisting
+          value: "true"
+      workspaces:
+        - name: output
+          workspace: source
+
+    # Task 2: Install dependencies and run tests
+    - name: npm-test
+      runAfter:
+        - git-checkout
+      workspaces:
+        - name: source
+          workspace: source
+      taskSpec:
+        workspaces:
+          - name: source
+        steps:
+          - name: npm-install
+            image: node:18-alpine
+            workingDir: $(workspaces.source.path)
+            script: |
+              #!/bin/sh
+              set -e
+              echo "Installing npm dependencies..."
+              npm ci
+              echo "Dependencies installed successfully"
+
+          - name: npm-test
+            image: node:18-alpine
+            workingDir: $(workspaces.source.path)
+            script: |
+              #!/bin/sh
+              set -e
+              echo "Running tests..."
+              npm test
+              echo "Tests completed successfully"
+
+    # Task 3: Build and push container image using Kaniko
+    - name: build-and-push-image
+      runAfter:
+        - npm-test
+      taskRef:
+        resolver: hub
+        params:
+          - name: kind
+            value: task
+          - name: name
+            value: kaniko
+          - name: version
+            value: "0.7"
+      params:
+        - name: IMAGE
+          value: $(params.image-name)
+        - name: DOCKERFILE
+          value: $(params.dockerfile-path)
+        - name: CONTEXT
+          value: $(params.context-path)
+        - name: BUILDER_IMAGE
+          value: gcr.io/kaniko-project/executor:v1.23.2
+        - name: EXTRA_ARGS
+          value:
+            - --cache=true
+            - --cache-ttl=24h
+            - --compression=gzip
+            - --snapshot-mode=redo
+      workspaces:
+        - name: source
+          workspace: source
+        - name: dockerconfig
+          workspace: dockerconfig
