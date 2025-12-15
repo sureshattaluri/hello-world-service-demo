@@ -17,7 +17,7 @@ spec:
     - name: setup-package-credentials
       type: string
       description: "Set to 'true' to run setup-package-credentials task"
-      default: "false"
+      default: "true"
     - name: image-name
       type: string
       description: "The full destination image (registry/repo:tag)"
