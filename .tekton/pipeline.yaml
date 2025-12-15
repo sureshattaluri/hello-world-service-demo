@@ -113,7 +113,7 @@ spec:
     ########################################################################
     - name: build-image
       runAfter:
-        - setup-package-credentials
+        - git-checkout
       taskRef:
         resolver: git
         params:
