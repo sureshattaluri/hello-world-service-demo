@@ -1,0 +1,159 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world-service-demo-pipeline
+  labels:
+    app.kubernetes.io/version: "1.0"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.59.0"
+    tekton.dev/categories: Build
+    tekton.dev/tags: nodejs,express,buildkit,docker
+    tekton.dev/displayName: "Hello World Service Demo Pipeline"
+    tekton.dev/platforms: "linux/amd64"
+spec:
+  description: >-
+    This pipeline builds and pushes a Docker image for a Node.js Express application
+    using BuildKit. It clones the source code, validates it by running tests,
+    builds the container image using the Dockerfile, and pushes it to the registry.
+
+  params:
+    - name: git-repo-url
+      type: string
+      description: The git repository URL to clone from
+    - name: git-revision
+      type: string
+      description: The git branch, tag or SHA to checkout
+      default: "main"
+    - name: image-registry-url
+      type: string
+      description: The container registry URL where image will be pushed
+    - name: image-repo-name
+      type: string
+      description: The image repository name (without registry URL)
+    - name: image-tag
+      type: string
+      description: The tag to apply to the built image
+      default: "latest"
+    - name: dockerfile-path
+      type: string
+      description: The path to the Dockerfile relative to source root
+      default: "./Dockerfile"
+    - name: build-context-path
+      type: string
+      description: The build context path relative to source root
+      default: "."
+    - name: node-version
+      type: string
+      description: Node.js version to use for validation (if needed)
+      default: "18"
+
+  workspaces:
+    - name: source
+      description: Workspace containing the source code and build artifacts
+    - name: package-credentials
+      description: Workspace containing credentials for accessing package registries (npm, etc)
+      optional: true
+    - name: dockerconfig
+      description: Workspace containing Docker config with registry credentials
+      optional: true
+
+  tasks:
+    # Task 1: Clone the source repository
+    - name: clone-repository
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/planton-cloud/tekton-task-git-clone.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task.yaml
+      workspaces:
+        - name: output
+          workspace: source
+      params:
+        - name: url
+          value: $(params.git-repo-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: deleteExisting
+          value: "true"
+        - name: verbose
+          value: "true"
+
+    # Task 2: Validate Node.js application by running tests
+    - name: npm-test
+      runAfter:
+        - clone-repository
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/planton-cloud/tekton-task-npm.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task.yaml
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: args
+          value:
+            - "test"
+        - name: path-to-package-json
+          value: "."
+
+    # Task 3: Build and push Docker image using BuildKit
+    - name: build-push-image
+      runAfter:
+        - npm-test
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/planton-cloud/tekton-task-buildkit.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task.yaml
+      workspaces:
+        - name: source
+          workspace: source
+        - name: dockerconfig
+          workspace: dockerconfig
+      params:
+        - name: image-reference
+          value: "$(params.image-registry-url)/$(params.image-repo-name):$(params.image-tag)"
+        - name: dockerfile-path
+          value: "$(params.dockerfile-path)"
+        - name: build-context
+          value: "$(params.build-context-path)"
+        - name: build-args
+          value: []
+        - name: build-secrets
+          value: []
+        - name: push
+          value: "true"
+        - name: insecure-registry
+          value: "false"
+
+  finally:
+    # This task runs regardless of pipeline success/failure
+    - name: pipeline-status
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/planton-cloud/tekton-task-pipeline-finally.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task.yaml
+      params:
+        - name: aggregate-status
+          value: "$(tasks.status)"
+        - name: pipeline-name
+          value: "hello-world-service-demo-pipeline"
