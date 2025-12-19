@@ -1,0 +1,228 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world-service-demo-pipeline
+  labels:
+    app.kubernetes.io/version: "0.1"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.17.0"
+    tekton.dev/tags: nodejs,express,buildkit
+    tekton.dev/displayName: "Node.js Express Pipeline with BuildKit"
+spec:
+  description: >-
+    This pipeline builds and publishes a Node.js Express application using BuildKit.
+    It includes npm dependency installation, code validation, image building, and pushing to a container registry.
+
+  params:
+    - name: repo-url
+      type: string
+      description: The git repository URL to clone from
+    - name: revision
+      type: string
+      description: The git branch, tag or SHA to checkout
+      default: "main"
+    - name: image-url
+      type: string
+      description: The fully qualified image name (registry/repository:tag)
+    - name: dockerfile
+      type: string
+      description: Path to the Dockerfile to build
+      default: "./Dockerfile"
+    - name: context
+      type: string
+      description: The build context used by BuildKit
+      default: "."
+    - name: build-args
+      type: array
+      description: Build arguments to pass to the image build
+      default: []
+    - name: node-version
+      type: string
+      description: The Node.js version to use for validation
+      default: "18"
+
+  workspaces:
+    - name: source
+      description: Workspace where the git repo is cloned and build happens
+    - name: package-credentials
+      description: Workspace containing credentials for package registries (npm, etc.)
+      optional: true
+
+  tasks:
+    # Task 1: Clone the repository
+    - name: fetch-repository
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/git-clone/0.9/git-clone.yaml
+          - name: revision
+            value: main
+      workspaces:
+        - name: output
+          workspace: source
+      params:
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.revision)
+        - name: deleteExisting
+          value: "true"
+
+    # Task 2: Install npm dependencies
+    - name: npm-install
+      runAfter:
+        - fetch-repository
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/npm/0.1/npm.yaml
+          - name: revision
+            value: main
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: PATH_CONTEXT
+          value: "."
+        - name: ARGS
+          value:
+            - "ci"
+
+    # Task 3: Run npm audit for security vulnerabilities (non-blocking)
+    - name: npm-audit
+      runAfter:
+        - npm-install
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/npm/0.1/npm.yaml
+          - name: revision
+            value: main
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: PATH_CONTEXT
+          value: "."
+        - name: ARGS
+          value:
+            - "audit"
+            - "--audit-level=moderate"
+
+    # Task 4: Run npm test
+    - name: npm-test
+      runAfter:
+        - npm-install
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/npm/0.1/npm.yaml
+          - name: revision
+            value: main
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: PATH_CONTEXT
+          value: "."
+        - name: ARGS
+          value:
+            - "test"
+
+    # Task 5: Validate Node.js syntax
+    - name: validate-nodejs
+      runAfter:
+        - npm-install
+      workspaces:
+        - name: source
+          workspace: source
+      taskSpec:
+        workspaces:
+          - name: source
+        params:
+          - name: node-version
+            type: string
+        steps:
+          - name: validate-syntax
+            image: node:$(params.node-version)-alpine
+            workingDir: $(workspaces.source.path)
+            script: |
+              #!/bin/sh
+              set -e
+              echo "Validating Node.js syntax..."
+              
+              # Check if main file exists
+              if [ ! -f "server.js" ]; then
+                echo "ERROR: server.js not found!"
+                exit 1
+              fi
+              
+              # Validate syntax by running node with --check flag
+              node --check server.js
+              
+              echo "Node.js syntax validation passed!"
+      params:
+        - name: node-version
+          value: $(params.node-version)
+
+    # Task 6: Build and push image with BuildKit
+    - name: build-and-push-image
+      runAfter:
+        - npm-test
+        - validate-nodejs
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/buildkit/0.1/buildkit.yaml
+          - name: revision
+            value: main
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: IMAGE
+          value: $(params.image-url)
+        - name: DOCKERFILE
+          value: $(params.dockerfile)
+        - name: CONTEXT
+          value: $(params.context)
+        - name: BUILD_ARGS
+          value: $(params.build-args[*])
+
+  finally:
+    # Task: Show pipeline summary
+    - name: pipeline-summary
+      taskSpec:
+        params:
+          - name: pipeline-name
+            type: string
+          - name: image-url
+            type: string
+          - name: revision
+            type: string
+        steps:
+          - name: print-summary
+            image: alpine:3.18
+            script: |
+              #!/bin/sh
+              echo "=========================================="
+              echo "Pipeline Execution Summary"
+              echo "=========================================="
+              echo "Pipeline: $(params.pipeline-name)"
+              echo "Image Built: $(params.image-url)"
+              echo "Git Revision: $(params.revision)"
+              echo "Status: Completed"
+              echo "=========================================="
+      params:
+        - name: pipeline-name
+          value: "hello-world-service-demo-pipeline"
+        - name: image-url
+          value: $(params.image-url)
+        - name: revision
+          value: $(params.revision)
