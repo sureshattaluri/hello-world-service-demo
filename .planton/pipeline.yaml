@@ -1,0 +1,223 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world-service-demo-pipeline
+  labels:
+    app.kubernetes.io/version: "1.0"
+    planton.cloud/service: hello-world-service-demo
+    planton.cloud/language: nodejs
+    planton.cloud/framework: express
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.50.0"
+    tekton.dev/tags: nodejs,express,buildkit
+    tekton.dev/displayName: "Node.js Express Service Pipeline"
+spec:
+  description: |
+    This pipeline builds and deploys a Node.js Express application.
+    
+    It performs the following steps:
+    1. Clones the source code repository
+    2. Installs Node.js dependencies
+    3. Runs tests (if configured)
+    4. Builds a Docker image using BuildKit
+    5. Pushes the image to the container registry
+    
+    The pipeline uses BuildKit for efficient and secure image building.
+  
+  params:
+    # Standard Git parameters
+    - name: git-url
+      type: string
+      description: The git repository URL to clone
+    
+    - name: git-revision
+      type: string
+      description: The git revision (branch, tag, or commit SHA) to checkout
+      default: main
+    
+    - name: git-depth
+      type: string
+      description: The depth of the git clone (0 for full history)
+      default: "1"
+    
+    # Image parameters
+    - name: image-url
+      type: string
+      description: The full URL of the container image to build (e.g., registry.io/org/image:tag)
+    
+    - name: dockerfile-path
+      type: string
+      description: Path to the Dockerfile relative to the source root
+      default: Dockerfile
+    
+    - name: build-context
+      type: string
+      description: Path to the build context directory relative to the source root
+      default: .
+    
+    # Node.js specific parameters
+    - name: nodejs-version
+      type: string
+      description: Node.js version to use for building (e.g., 18, 20)
+      default: "18"
+    
+    - name: npm-install-args
+      type: string
+      description: Additional arguments to pass to npm install
+      default: "--legacy-peer-deps"
+    
+    - name: run-tests
+      type: string
+      description: Whether to run tests (true/false)
+      default: "true"
+    
+    # BuildKit parameters
+    - name: buildkit-secret-id
+      type: string
+      description: Secret ID for BuildKit to access private registries
+      default: ""
+    
+    - name: build-args
+      type: array
+      description: Build arguments to pass to docker build
+      default: []
+    
+    - name: build-platforms
+      type: string
+      description: Target platforms for multi-arch builds (e.g., linux/amd64,linux/arm64)
+      default: linux/amd64
+  
+  workspaces:
+    - name: source
+      description: The workspace containing the source code
+    
+    - name: package-credentials
+      description: Workspace containing credentials for package registries (.npmrc, etc.)
+      optional: true
+  
+  tasks:
+    # Task 1: Clone the source repository
+    - name: git-clone
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/git-clone/0.9/git-clone.yaml
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: depth
+          value: $(params.git-depth)
+        - name: deleteExisting
+          value: "true"
+      workspaces:
+        - name: output
+          workspace: source
+    
+    # Task 2: Install Node.js dependencies
+    - name: npm-install
+      runAfter:
+        - git-clone
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/npm/0.1/npm.yaml
+      params:
+        - name: PATH_CONTEXT
+          value: $(params.build-context)
+        - name: ARGS
+          value:
+            - install
+            - $(params.npm-install-args)
+      workspaces:
+        - name: source
+          workspace: source
+    
+    # Task 3: Run tests (conditional based on parameter)
+    - name: npm-test
+      runAfter:
+        - npm-install
+      when:
+        - input: "$(params.run-tests)"
+          operator: in
+          values: ["true", "True", "TRUE"]
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/npm/0.1/npm.yaml
+      params:
+        - name: PATH_CONTEXT
+          value: $(params.build-context)
+        - name: ARGS
+          value:
+            - test
+      workspaces:
+        - name: source
+          workspace: source
+    
+    # Task 4: Build and push Docker image using BuildKit
+    - name: buildkit
+      runAfter:
+        - npm-test
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/buildkit/0.1/buildkit.yaml
+      params:
+        - name: IMAGE
+          value: $(params.image-url)
+        - name: DOCKERFILE
+          value: $(params.dockerfile-path)
+        - name: CONTEXT
+          value: $(params.build-context)
+        - name: BUILD_ARGS
+          value:
+            - NODE_VERSION=$(params.nodejs-version)
+        - name: PLATFORMS
+          value: $(params.build-platforms)
+      workspaces:
+        - name: source
+          workspace: source
+  
+  finally:
+    # Cleanup task that runs regardless of pipeline success/failure
+    - name: cleanup
+      taskSpec:
+        steps:
+          - name: cleanup-workspace
+            image: alpine:3.18
+            script: |
+              #!/bin/sh
+              set -e
+              echo "Pipeline execution completed"
+              echo "Image built: $(params.image-url)"
+              echo "Git revision: $(params.git-revision)"
+              echo "Cleaning up temporary files..."
+              # Add any cleanup logic here if needed
+      params:
+        - name: image-url
+          value: $(params.image-url)
+        - name: git-revision
+          value: $(params.git-revision)
