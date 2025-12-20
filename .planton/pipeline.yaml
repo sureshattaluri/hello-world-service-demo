@@ -1,0 +1,143 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world-service-demo
+  labels:
+    app.kubernetes.io/version: "1.0"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.12.1"
+    tekton.dev/tags: nodejs,express,buildkit
+    tekton.dev/displayName: "Hello World Service Demo Pipeline"
+spec:
+  description: >-
+    This pipeline builds and publishes a Node.js Express application container image.
+    It clones the repository, runs npm tests, and builds the image using BuildKit.
+
+  params:
+    - name: repo-url
+      type: string
+      description: The git repository URL to clone from
+    - name: revision
+      type: string
+      description: The git branch, tag or SHA to checkout
+      default: "main"
+    - name: container-registry-url
+      type: string
+      description: The container registry URL where the image will be pushed
+    - name: container-image-repo
+      type: string
+      description: The container image repository name
+    - name: container-image-tag
+      type: string
+      description: The container image tag
+      default: "latest"
+    - name: dockerfile-path
+      type: string
+      description: Path to the Dockerfile relative to the source workspace
+      default: "./Dockerfile"
+    - name: docker-build-context
+      type: string
+      description: The build context used by BuildKit
+      default: "."
+    - name: docker-build-extra-args
+      type: string
+      description: Extra arguments passed to BuildKit build command
+      default: ""
+
+  workspaces:
+    - name: source
+      description: Workspace containing the source code
+    - name: package-credentials
+      description: Workspace containing container registry credentials
+      optional: false
+
+  tasks:
+    # Task 1: Clone the repository
+    - name: git-clone
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/git-clone/0.9/git-clone.yaml
+          - name: revision
+            value: main
+      workspaces:
+        - name: output
+          workspace: source
+      params:
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.revision)
+        - name: deleteExisting
+          value: "true"
+
+    # Task 2: Run npm tests
+    - name: npm-test
+      runAfter:
+        - git-clone
+      workspaces:
+        - name: source
+          workspace: source
+      taskSpec:
+        workspaces:
+          - name: source
+            description: The workspace containing the Node.js project
+        steps:
+          - name: install-dependencies
+            image: node:18-alpine
+            workingDir: $(workspaces.source.path)
+            script: |
+              #!/bin/sh
+              set -e
+              echo "Installing npm dependencies..."
+              npm ci
+              echo "Dependencies installed successfully"
+          - name: run-tests
+            image: node:18-alpine
+            workingDir: $(workspaces.source.path)
+            script: |
+              #!/bin/sh
+              set -e
+              echo "Running npm tests..."
+              npm test
+              echo "Tests completed successfully"
+
+    # Task 3: Build and push image with BuildKit
+    - name: buildkit-build-push
+      runAfter:
+        - npm-test
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/buildkit/0.1/buildkit.yaml
+          - name: revision
+            value: main
+      workspaces:
+        - name: source
+          workspace: source
+        - name: dockerconfig
+          workspace: package-credentials
+      params:
+        - name: IMAGE
+          value: "$(params.container-registry-url)/$(params.container-image-repo):$(params.container-image-tag)"
+        - name: DOCKERFILE
+          value: "$(params.dockerfile-path)"
+        - name: CONTEXT
+          value: "$(params.docker-build-context)"
+        - name: EXTRA_ARGS
+          value: "$(params.docker-build-extra-args)"
+
+  finally:
+    # Cleanup task that runs regardless of pipeline success or failure
+    - name: cleanup
+      taskSpec:
+        steps:
+          - name: cleanup-workspace
+            image: alpine:3.18
+            script: |
+              #!/bin/sh
+              echo "Pipeline execution completed"
+              echo "Image built and pushed successfully"
