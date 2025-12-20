@@ -1,0 +1,172 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world-service-demo-pipeline
+  labels:
+    app.kubernetes.io/version: "1.0"
+    planton.cloud/service: hello-world-service-demo
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.50.0"
+    tekton.dev/displayName: "Hello World Service Demo Pipeline"
+    tekton.dev/tags: nodejs, express, buildkit, docker
+    tekton.dev/platforms: "linux/amd64,linux/arm64"
+spec:
+  description: |
+    This pipeline builds and deploys the hello-world-service-demo Node.js Express application.
+    
+    Pipeline Steps:
+    1. Clone source code from Git repository
+    2. Run npm tests (if available)
+    3. Build Docker image using BuildKit
+    4. Push image to container registry
+    
+    The pipeline uses standard Planton Cloud conventions and integrates with Tekton Hub tasks.
+  
+  params:
+    - name: git-url
+      type: string
+      description: The Git repository URL containing the application source code
+      default: ""
+    
+    - name: git-revision
+      type: string
+      description: The Git revision (branch, tag, or commit SHA) to build
+      default: main
+    
+    - name: image-registry
+      type: string
+      description: The container registry URL (e.g., gcr.io, docker.io)
+      default: ""
+    
+    - name: image-repo
+      type: string
+      description: The image repository path within the registry
+      default: hello-world-service-demo
+    
+    - name: image-tag
+      type: string
+      description: The tag to apply to the built image
+      default: latest
+    
+    - name: dockerfile-path
+      type: string
+      description: Path to the Dockerfile relative to repository root
+      default: ./Dockerfile
+    
+    - name: build-context
+      type: string
+      description: Path to the build context directory
+      default: .
+    
+    - name: build-args
+      type: array
+      description: Build arguments to pass to the Docker build (format KEY=VALUE)
+      default: []
+    
+    - name: target-platforms
+      type: array
+      description: Target platforms for multi-arch builds
+      default:
+        - linux/amd64
+  
+  workspaces:
+    - name: source
+      description: Workspace containing the application source code
+    
+    - name: dockerconfig
+      description: Docker configuration for authentication with container registries
+      optional: true
+  
+  tasks:
+    - name: git-clone
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/git-clone/0.9/git-clone.yaml
+          - name: revision
+            value: main
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: deleteExisting
+          value: "true"
+        - name: depth
+          value: "1"
+        - name: subdirectory
+          value: ""
+        - name: sslVerify
+          value: "true"
+      workspaces:
+        - name: output
+          workspace: source
+    
+    - name: npm-test
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/npm/0.1/npm.yaml
+          - name: revision
+            value: main
+      runAfter:
+        - git-clone
+      params:
+        - name: ARGS
+          value:
+            - test
+        - name: PATH_CONTEXT
+          value: .
+        - name: IMAGE
+          value: node:18-alpine
+      workspaces:
+        - name: source
+          workspace: source
+    
+    - name: build-and-push
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/buildkit/0.1/buildkit.yaml
+          - name: revision
+            value: main
+      runAfter:
+        - npm-test
+      params:
+        - name: IMAGE
+          value: $(params.image-registry)/$(params.image-repo):$(params.image-tag)
+        - name: DOCKERFILE
+          value: $(params.dockerfile-path)
+        - name: CONTEXT
+          value: $(params.build-context)
+        - name: BUILD_ARGS
+          value:
+            - $(params.build-args[*])
+        - name: PLATFORMS
+          value:
+            - $(params.target-platforms[*])
+        - name: CACHE
+          value: "true"
+        - name: INSECURE_REGISTRY
+          value: "false"
+      workspaces:
+        - name: source
+          workspace: source
+        - name: dockerconfig
+          workspace: dockerconfig
+  
+  results:
+    - name: image-url
+      description: The full URL of the built and pushed image
+      value: $(tasks.build-and-push.results.IMAGE_URL)
+    
+    - name: image-digest
+      description: The digest of the built image
+      value: $(tasks.build-and-push.results.IMAGE_DIGEST)
+    
+    - name: git-commit
+      description: The Git commit SHA that was built
+      value: $(tasks.git-clone.results.commit)
