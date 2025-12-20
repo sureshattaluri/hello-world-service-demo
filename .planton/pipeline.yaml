@@ -1,0 +1,185 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world-service-demo
+  labels:
+    app.kubernetes.io/version: "0.1"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.17.0"
+    tekton.dev/categories: Build
+    tekton.dev/tags: nodejs, express, docker, buildkit
+    tekton.dev/displayName: "Node.js Express Build Pipeline"
+    tekton.dev/platforms: "linux/amd64"
+spec:
+  description: >-
+    This pipeline builds a Node.js Express application, runs tests, and 
+    builds a Docker image using BuildKit. The pipeline includes dependency 
+    installation, test execution, and container image building with push 
+    to a container registry.
+
+  params:
+    - name: git-url
+      type: string
+      description: The git repository URL to clone from
+    
+    - name: git-revision
+      type: string
+      description: The git branch, tag or SHA to checkout
+      default: "main"
+    
+    - name: git-depth
+      type: string
+      description: Number of commits to fetch (0 for all history)
+      default: "1"
+    
+    - name: image-url
+      type: string
+      description: The fully qualified image name (e.g., registry/repo:tag)
+    
+    - name: image-tag
+      type: string
+      description: The tag to apply to the built image
+      default: "latest"
+    
+    - name: dockerfile
+      type: string
+      description: Path to the Dockerfile relative to the source root
+      default: "./Dockerfile"
+    
+    - name: context
+      type: string
+      description: Path to the build context relative to the source root
+      default: "."
+    
+    - name: build-args
+      type: array
+      description: List of build arguments to pass to the image build (e.g., ["ARG1=value1", "ARG2=value2"])
+      default: []
+    
+    - name: node-version
+      type: string
+      description: Node.js version to use for npm tasks
+      default: "18"
+
+  workspaces:
+    - name: source
+      description: Workspace containing the source code to build
+    
+    - name: package-credentials
+      description: Workspace containing credentials for package registries (npm, maven, etc.)
+      optional: true
+
+  tasks:
+    - name: fetch-source
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/plantoncloud/tekton-hub.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/git-clone/0.9/git-clone.yaml
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: depth
+          value: $(params.git-depth)
+        - name: deleteExisting
+          value: "true"
+      workspaces:
+        - name: output
+          workspace: source
+
+    - name: install-and-test
+      runAfter:
+        - fetch-source
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/plantoncloud/tekton-hub.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/npm/0.1/npm.yaml
+      params:
+        - name: PATH_CONTEXT
+          value: "."
+        - name: ARGS
+          value:
+            - "ci"
+            - "--prefer-offline"
+        - name: IMAGE
+          value: "node:$(params.node-version)-alpine"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: run-tests
+      runAfter:
+        - install-and-test
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/plantoncloud/tekton-hub.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/npm/0.1/npm.yaml
+      params:
+        - name: PATH_CONTEXT
+          value: "."
+        - name: ARGS
+          value:
+            - "test"
+        - name: IMAGE
+          value: "node:$(params.node-version)-alpine"
+      workspaces:
+        - name: source
+          workspace: source
+
+    - name: build-and-push-image
+      runAfter:
+        - run-tests
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/plantoncloud/tekton-hub.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/buildkit/0.1/buildkit.yaml
+      params:
+        - name: IMAGE
+          value: "$(params.image-url):$(params.image-tag)"
+        - name: DOCKERFILE
+          value: $(params.dockerfile)
+        - name: CONTEXT
+          value: $(params.context)
+        - name: BUILD_ARGS
+          value:
+            - $(params.build-args[*])
+      workspaces:
+        - name: source
+          workspace: source
+
+  finally:
+    - name: cleanup
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/plantoncloud/tekton-hub.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/cleanup/0.1/cleanup.yaml
+      workspaces:
+        - name: source
+          workspace: source
