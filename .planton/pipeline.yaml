@@ -1,0 +1,161 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world-service-demo
+  annotations:
+    description: Build pipeline for Node.js Express service
+    planton.cloud/service: hello-world-service-demo
+    planton.cloud/language: nodejs
+    planton.cloud/framework: express
+spec:
+  description: |
+    This pipeline builds a Node.js Express application using npm and BuildKit.
+    It performs the following steps:
+    1. Clone the source code from the Git repository
+    2. Install npm dependencies
+    3. Run tests (validation step)
+    4. Build and push the Docker image using BuildKit
+
+  params:
+    - name: repo-url
+      type: string
+      description: The git repository URL to clone
+    
+    - name: revision
+      type: string
+      description: The git revision (branch, tag, or commit SHA) to checkout
+      default: main
+    
+    - name: image-url
+      type: string
+      description: The fully qualified image name (e.g., registry.example.com/org/image:tag)
+    
+    - name: dockerfile
+      type: string
+      description: Path to the Dockerfile relative to source root
+      default: Dockerfile
+    
+    - name: context
+      type: string
+      description: Path to the build context relative to source root
+      default: .
+    
+    - name: build-args
+      type: array
+      description: Build arguments to pass to the Docker build (format KEY=VALUE)
+      default: []
+    
+    - name: planton-cloud-artifact-store-endpoint
+      type: string
+      description: Planton Cloud artifact store endpoint URL for caching
+      default: ""
+    
+    - name: planton-cloud-artifact-store-repo
+      type: string
+      description: Planton Cloud artifact store repository name
+      default: ""
+
+  workspaces:
+    - name: source
+      description: Workspace containing the source code
+    
+    - name: package-credentials
+      description: Workspace containing credentials for package repositories (npm, maven, etc.)
+      optional: true
+
+  tasks:
+    # Task 1: Clone the repository
+    - name: git-clone
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/git-clone/0.9/git-clone.yaml
+      params:
+        - name: url
+          value: $(params.repo-url)
+        - name: revision
+          value: $(params.revision)
+        - name: deleteExisting
+          value: "true"
+      workspaces:
+        - name: output
+          workspace: source
+
+    # Task 2: Install npm dependencies
+    - name: npm-install
+      runAfter:
+        - git-clone
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/npm/0.1/npm.yaml
+      params:
+        - name: ARGS
+          value:
+            - install
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Task 3: Run npm tests (validation)
+    - name: npm-test
+      runAfter:
+        - npm-install
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/npm/0.1/npm.yaml
+      params:
+        - name: ARGS
+          value:
+            - test
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Task 4: Build and push Docker image using BuildKit
+    - name: buildkit
+      runAfter:
+        - npm-test
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/plantoncloud/planton-tekton-tasks.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: buildkit/0.1/buildkit.yaml
+      params:
+        - name: image-url
+          value: $(params.image-url)
+        - name: dockerfile
+          value: $(params.dockerfile)
+        - name: context
+          value: $(params.context)
+        - name: build-args
+          value:
+            - $(params.build-args[*])
+        - name: planton-cloud-artifact-store-endpoint
+          value: $(params.planton-cloud-artifact-store-endpoint)
+        - name: planton-cloud-artifact-store-repo
+          value: $(params.planton-cloud-artifact-store-repo)
+      workspaces:
+        - name: source
+          workspace: source
