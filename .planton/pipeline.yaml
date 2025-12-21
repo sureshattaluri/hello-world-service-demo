@@ -1,0 +1,192 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world-service-demo-pipeline
+  labels:
+    app.kubernetes.io/version: "1.0"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.17.0"
+    tekton.dev/tags: nodejs,express,buildkit
+    tekton.dev/displayName: "Hello World Service Demo Pipeline"
+spec:
+  description: |
+    This pipeline builds and deploys a Node.js Express application using BuildKit for containerization.
+    
+    The pipeline performs the following steps:
+    1. Clone the source code from the Git repository
+    2. Run tests using npm
+    3. Build container image using BuildKit with Dockerfile
+    4. Push the image to the container registry
+    
+    Technology Stack:
+    - Language: Node.js v18+
+    - Framework: Express.js
+    - Build Tool: npm
+    - Image Builder: BuildKit (Dockerfile-based)
+
+  params:
+    - name: git-repo-url
+      type: string
+      description: The URL of the Git repository containing the source code
+      
+    - name: git-revision
+      type: string
+      description: The Git revision (branch, tag, or commit SHA) to checkout
+      default: main
+      
+    - name: image-registry
+      type: string
+      description: The container registry where the image will be pushed (e.g., gcr.io, docker.io)
+      
+    - name: image-repo-path
+      type: string
+      description: The repository path within the registry (e.g., my-org/my-app)
+      
+    - name: image-tag
+      type: string
+      description: The tag to apply to the built image
+      default: latest
+      
+    - name: dockerfile-path
+      type: string
+      description: Path to the Dockerfile relative to the source root
+      default: ./Dockerfile
+      
+    - name: build-context
+      type: string
+      description: Path to the build context directory relative to the source root
+      default: .
+      
+    - name: target-platform
+      type: string
+      description: Target platform for the build (e.g., linux/amd64, linux/arm64)
+      default: linux/amd64
+
+  workspaces:
+    - name: source
+      description: Workspace containing the source code from Git repository
+      
+    - name: package-credentials
+      description: Workspace containing credentials for accessing package registries (npm, maven, etc.)
+      optional: true
+
+  tasks:
+    # Task 1: Clone the Git repository
+    - name: fetch-source
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/git-clone/0.9/git-clone.yaml
+      workspaces:
+        - name: output
+          workspace: source
+      params:
+        - name: url
+          value: $(params.git-repo-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: deleteExisting
+          value: "true"
+
+    # Task 2: Run tests
+    - name: run-tests
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/npm/0.1/npm.yaml
+      runAfter:
+        - fetch-source
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: ARGS
+          value:
+            - install
+        - name: PATH_CONTEXT
+          value: .
+
+    - name: npm-test
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/npm/0.1/npm.yaml
+      runAfter:
+        - run-tests
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: ARGS
+          value:
+            - test
+        - name: PATH_CONTEXT
+          value: .
+
+    # Task 3: Build and push image using BuildKit
+    - name: build-push-image
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/plantoncloud/planton-tekton-catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/buildkit/0.1/buildkit.yaml
+      runAfter:
+        - npm-test
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: IMAGE
+          value: $(params.image-registry)/$(params.image-repo-path):$(params.image-tag)
+        - name: DOCKERFILE
+          value: $(params.dockerfile-path)
+        - name: CONTEXT
+          value: $(params.build-context)
+        - name: PLATFORMS
+          value:
+            - $(params.target-platform)
+        - name: BUILD_ARGS
+          value: []
+        - name: SECRETS
+          value: []
+
+  finally:
+    # Cleanup task that runs regardless of pipeline success or failure
+    - name: cleanup
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/cleanup/0.1/cleanup.yaml
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: PATHS
+          value:
+            - node_modules
+            - .npm
