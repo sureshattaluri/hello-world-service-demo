@@ -1,0 +1,121 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world-service-demo
+  labels:
+    app.kubernetes.io/name: hello-world-service-demo
+    app.kubernetes.io/managed-by: planton-cloud
+spec:
+  description: |
+    Pipeline for building and deploying the hello-world-service-demo Node.js Express application.
+    
+    This pipeline:
+    1. Clones the source code from GitHub
+    2. Builds a Docker image using BuildKit
+    3. Pushes the image to the container registry
+    
+    Language: Node.js
+    Framework: Express
+    Build Method: Dockerfile
+  
+  params:
+    # Standard Planton Cloud parameters
+    - name: planton-cloud-artifact-store-id
+      type: string
+      description: Planton Cloud artifact store identifier for image registry authentication
+    
+    - name: container-repo-org
+      type: string
+      description: Container registry organization/project name where images are stored
+    
+    - name: container-repo-host
+      type: string
+      description: Container registry hostname (e.g., gcr.io, docker.io)
+    
+    - name: git-repo-url
+      type: string
+      description: Git repository URL to clone source code from
+    
+    - name: git-branch
+      type: string
+      description: Git branch to checkout and build
+      default: main
+    
+    - name: git-commit-id
+      type: string
+      description: Git commit SHA to checkout (if empty, uses latest from branch)
+      default: ""
+    
+    - name: image-repo
+      type: string
+      description: Container image repository name (without tag)
+    
+    - name: image-tag
+      type: string
+      description: Container image tag to apply
+      default: latest
+    
+    - name: dockerfile-path
+      type: string
+      description: Path to Dockerfile relative to repository root
+      default: ./Dockerfile
+    
+    - name: build-context-dir
+      type: string
+      description: Build context directory for Docker build
+      default: .
+  
+  workspaces:
+    - name: source
+      description: Workspace containing the cloned source code
+    
+    - name: package-credentials
+      description: Workspace containing package manager credentials (npm, yarn, etc.)
+      optional: true
+  
+  tasks:
+    # Task 1: Clone the Git repository
+    - name: git-clone
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/git-clone/0.9/git-clone.yaml
+          - name: revision
+            value: main
+      workspaces:
+        - name: output
+          workspace: source
+      params:
+        - name: url
+          value: $(params.git-repo-url)
+        - name: revision
+          value: $(params.git-branch)
+        - name: deleteExisting
+          value: "true"
+        - name: verbose
+          value: "true"
+    
+    # Task 2: Build and push container image using BuildKit
+    - name: buildkit
+      runAfter:
+        - git-clone
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://raw.githubusercontent.com/tektoncd/catalog/main/task/buildkit/0.1/buildkit.yaml
+          - name: revision
+            value: main
+      workspaces:
+        - name: source
+          workspace: source
+      params:
+        - name: IMAGE
+          value: $(params.container-repo-host)/$(params.container-repo-org)/$(params.image-repo):$(params.image-tag)
+        - name: DOCKERFILE
+          value: $(params.dockerfile-path)
+        - name: CONTEXT
+          value: $(params.build-context-dir)
+        - name: BUILDER_IMAGE
+          value: moby/buildkit:v0.12.5-rootless
