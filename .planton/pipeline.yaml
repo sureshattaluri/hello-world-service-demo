@@ -1,0 +1,151 @@
+---
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world-service-demo-pipeline
+  labels:
+    app.kubernetes.io/name: hello-world-service-demo
+    app.kubernetes.io/component: pipeline
+    planton.cloud/service: hello-world-service-demo
+  annotations:
+    description: "CI/CD pipeline for Node.js Express hello-world-service-demo"
+    planton.cloud/language: "nodejs"
+    planton.cloud/framework: "express"
+    planton.cloud/build-method: "dockerfile"
+spec:
+  description: |
+    This pipeline builds and deploys the hello-world-service-demo Node.js Express application.
+    
+    Pipeline Flow:
+    1. Clones the Git repository from the specified URL and revision
+    2. Builds the Docker image using BuildKit with multi-stage Dockerfile
+    3. Pushes the built image to the container registry with proper tags
+    
+    The pipeline uses standard Planton Cloud parameters and workspaces for consistency
+    across all services in the platform.
+
+  # Standard Planton Cloud Pipeline Parameters
+  params:
+    # Git repository configuration
+    - name: git-repo-url
+      type: string
+      description: "The full URL of the Git repository to clone (e.g., https://github.com/org/repo.git)"
+
+    - name: git-revision
+      type: string
+      description: "The Git revision to checkout (branch, tag, or commit SHA)"
+      default: "main"
+
+    # Container image configuration
+    - name: image-repo-url
+      type: string
+      description: "The fully qualified container image repository URL without tag (e.g., gcr.io/project/image)"
+
+    - name: image-tag
+      type: string
+      description: "The tag to apply to the built container image (e.g., commit SHA, version number)"
+      default: "latest"
+
+    # Pipeline execution metadata
+    - name: pipeline-run-id
+      type: string
+      description: "Unique identifier for this pipeline run, used for tracking and logging"
+      default: ""
+
+    - name: service-id
+      type: string
+      description: "Planton Cloud service identifier"
+      default: ""
+
+    - name: environment-id
+      type: string
+      description: "Planton Cloud environment identifier"
+      default: ""
+
+    # Build configuration
+    - name: dockerfile-path
+      type: string
+      description: "Path to the Dockerfile relative to repository root"
+      default: "Dockerfile"
+
+    - name: docker-context
+      type: string
+      description: "Docker build context path relative to repository root"
+      default: "."
+
+  # Standard Planton Cloud Pipeline Workspaces
+  workspaces:
+    - name: source
+      description: "Workspace containing the cloned Git repository source code"
+
+    - name: package-credentials
+      description: "Workspace containing credentials for package registries (npm, maven, etc.) and container registries"
+      optional: true
+
+  # Pipeline Tasks
+  tasks:
+    # Task 1: Clone the Git repository
+    - name: git-clone
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/git-clone/0.9/git-clone.yaml
+      params:
+        - name: url
+          value: $(params.git-repo-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: deleteExisting
+          value: "true"
+        - name: gitInitImage
+          value: gcr.io/tekton-releases/github.com/tektoncd/pipeline/cmd/git-init:v0.40.2
+      workspaces:
+        - name: output
+          workspace: source
+
+    # Task 2: Build container image using BuildKit
+    - name: build-image
+      runAfter:
+        - git-clone
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/buildkit/0.1/buildkit.yaml
+      params:
+        - name: IMAGE
+          value: "$(params.image-repo-url):$(params.image-tag)"
+        - name: DOCKERFILE
+          value: "$(params.dockerfile-path)"
+        - name: CONTEXT
+          value: "$(params.docker-context)"
+        - name: BUILDKIT_CLIENT_IMAGE
+          value: "moby/buildkit:v0.12.5-rootless"
+      workspaces:
+        - name: source
+          workspace: source
+        - name: dockerconfig
+          workspace: package-credentials
+
+  # Pipeline Results
+  results:
+    - name: image-url
+      description: "The fully qualified URL of the built container image with tag"
+      value: "$(params.image-repo-url):$(params.image-tag)"
+
+    - name: git-commit
+      description: "The Git commit SHA that was built"
+      value: "$(tasks.git-clone.results.commit)"
+
+    - name: git-url
+      description: "The Git repository URL that was cloned"
+      value: "$(tasks.git-clone.results.url)"
