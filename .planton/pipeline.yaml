@@ -1,0 +1,234 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: hello-world-service-demo-pipeline
+  labels:
+    app.kubernetes.io/version: "1.0.0"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.50.0"
+    tekton.dev/categories: Build Tools
+    tekton.dev/tags: nodejs, express, docker, buildkit
+    tekton.dev/displayName: "Hello World Service Demo Pipeline"
+    tekton.dev/platforms: "linux/amd64,linux/arm64"
+spec:
+  description: >-
+    This pipeline builds and pushes a container image for the hello-world-service-demo,
+    a Node.js Express application. The pipeline fetches source code from Git,
+    runs npm install, builds a Docker image using BuildKit, and pushes it to the
+    configured container registry.
+
+  params:
+    # Standard Parameters - Required by Planton Cloud Platform
+    - name: git-repo-url
+      type: string
+      description: The Git repository URL containing the source code
+    
+    - name: git-branch
+      type: string
+      description: The Git branch to checkout and build
+      default: main
+    
+    - name: git-commit-id
+      type: string
+      description: The specific Git commit SHA to checkout
+      default: ""
+    
+    - name: container-registry-url
+      type: string
+      description: The container registry URL where the image will be pushed (e.g., gcr.io, docker.io)
+    
+    - name: container-image-repo
+      type: string
+      description: The repository path within the container registry (e.g., myproject/myapp)
+    
+    - name: container-image-tag
+      type: string
+      description: The tag to apply to the built container image
+      default: latest
+    
+    # Application-specific Parameters
+    - name: dockerfile-path
+      type: string
+      description: Path to the Dockerfile relative to the repository root
+      default: ./Dockerfile
+    
+    - name: docker-build-context
+      type: string
+      description: The Docker build context path relative to the repository root
+      default: .
+    
+    - name: node-version
+      type: string
+      description: Node.js version to use for the build (must match Dockerfile)
+      default: "18"
+
+  workspaces:
+    - name: source
+      description: Workspace containing the source code checked out from Git
+    
+    - name: package-credentials
+      description: >-
+        Workspace containing credentials for package registries.
+        This workspace may contain .npmrc, .docker/config.json, or other
+        credential files needed during the build process.
+      optional: true
+
+  tasks:
+    # Task 1: Clone the Git repository
+    - name: fetch-source
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/git-clone/0.9/git-clone.yaml
+      params:
+        - name: url
+          value: $(params.git-repo-url)
+        - name: revision
+          value: $(params.git-branch)
+        - name: deleteExisting
+          value: "true"
+        - name: verbose
+          value: "true"
+        - name: gitInitImage
+          value: gcr.io/tekton-releases/github.com/tektoncd/pipeline/cmd/git-init:v0.40.2
+        - name: subdirectory
+          value: ""
+        - name: sslVerify
+          value: "true"
+        - name: crtFileName
+          value: ca-bundle.crt
+        - name: httpProxy
+          value: ""
+        - name: httpsProxy
+          value: ""
+        - name: noProxy
+          value: ""
+        - name: refspec
+          value: ""
+        - name: sparseCheckoutDirectories
+          value: ""
+        - name: userHome
+          value: /home/git
+      workspaces:
+        - name: output
+          workspace: source
+
+    # Task 2: Install Node.js dependencies
+    - name: npm-install
+      runAfter: ["fetch-source"]
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/npm/0.1/npm.yaml
+      params:
+        - name: PATH_CONTEXT
+          value: .
+        - name: ARGS
+          value:
+            - clean-install
+            - --prefer-offline
+            - --no-audit
+        - name: IMAGE
+          value: docker.io/library/node:$(params.node-version)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Task 3: Run npm tests
+    - name: npm-test
+      runAfter: ["npm-install"]
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/npm/0.1/npm.yaml
+      params:
+        - name: PATH_CONTEXT
+          value: .
+        - name: ARGS
+          value:
+            - test
+        - name: IMAGE
+          value: docker.io/library/node:$(params.node-version)
+      workspaces:
+        - name: source
+          workspace: source
+
+    # Task 4: Build and push container image using BuildKit
+    - name: build-and-push-image
+      runAfter: ["npm-test"]
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/tektoncd/catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: task/buildkit/0.1/buildkit.yaml
+      params:
+        - name: IMAGE
+          value: $(params.container-registry-url)/$(params.container-image-repo):$(params.container-image-tag)
+        - name: DOCKERFILE
+          value: $(params.dockerfile-path)
+        - name: CONTEXT
+          value: $(params.docker-build-context)
+        - name: BUILDER_IMAGE
+          value: moby/buildkit:v0.12.5-rootless
+        - name: BUILDKIT_CLIENT_IMAGE
+          value: moby/buildkit:v0.12.5-rootless
+        - name: BUILD_ARGS
+          value: []
+        - name: EXTRA_ARGS
+          value:
+            - --progress=plain
+            - --platform=linux/amd64
+      workspaces:
+        - name: source
+          workspace: source
+
+  finally:
+    # Final task: Report pipeline status
+    - name: pipeline-status
+      params:
+        - name: pipeline-name
+          value: $(context.pipeline.name)
+        - name: pipeline-run-name
+          value: $(context.pipelineRun.name)
+      taskSpec:
+        params:
+          - name: pipeline-name
+            type: string
+          - name: pipeline-run-name
+            type: string
+        steps:
+          - name: report-status
+            image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+            script: |
+              #!/usr/bin/env bash
+              echo "=========================================="
+              echo "Pipeline: $(params.pipeline-name)"
+              echo "PipelineRun: $(params.pipeline-run-name)"
+              echo "Status: $(tasks.status)"
+              echo "=========================================="
+              
+              if [ "$(tasks.status)" == "Succeeded" ]; then
+                echo "✅ All pipeline tasks completed successfully!"
+                echo "Container image built and pushed successfully."
+              else
+                echo "❌ Pipeline execution failed. Check task logs for details."
+              fi
