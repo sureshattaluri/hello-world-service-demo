@@ -17,6 +17,11 @@ spec:
       description: "Git revision to checkout (branch, tag, or commit SHA)"
       default: "main"
     
+    - name: git-branch
+      type: string
+      description: "Git branch name for reference"
+      default: "main"
+    
     - name: project-root
       type: string
       description: "Relative path to project root within the repository"
@@ -73,6 +78,10 @@ spec:
   workspaces:
     - name: source
       description: "Shared workspace for source code and build artifacts"
+    
+    - name: package-credentials
+      description: "Workspace for package registry credentials (optional)"
+      optional: true
 
   # ======================== TASKS ========================
   tasks:
