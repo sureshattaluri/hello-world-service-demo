@@ -1,0 +1,95 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: nodejs-express-pipeline
+  annotations:
+    description: "Tekton pipeline for Node.js Express hello-world-service-demo"
+spec:
+  params:
+    # Source Code Parameters
+    - name: git-url
+      type: string
+      description: "Git repository URL to clone"
+    
+    - name: git-revision
+      type: string
+      description: "Git revision (commit SHA, branch, or tag) to checkout"
+      default: "main"
+    
+    - name: project-root
+      type: string
+      description: "Relative path to project root within the repository"
+      default: "."
+    
+    # Container Image Parameters
+    - name: image-name
+      type: string
+      description: "Full container image name with registry and tag (e.g., us-docker.pkg.dev/project/repo/service:tag)"
+    
+    - name: dockerfile-path
+      type: string
+      description: "Path to Dockerfile relative to project root"
+      default: "Dockerfile"
+    
+    # Resource Tracking Parameters
+    - name: owner-identifier-label-key
+      type: string
+      description: "Label key for resource ownership tracking (pipeline-id)"
+      default: "pipeline-id"
+    
+    - name: owner-identifier-label-value
+      type: string
+      description: "Label value for resource ownership (pipeline ID for event routing)"
+  
+  workspaces:
+    - name: source
+      description: "Shared workspace for source code, build artifacts, and deployment manifests"
+  
+  tasks:
+    # Task 1: Clone Git Repository
+    - name: git-checkout
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: "https://github.com/plantoncloud/tekton-hub.git"
+          - name: revision
+            value: "main"
+          - name: pathInRepo
+            value: "tasks/git-clone.yaml"
+      params:
+        - name: url
+          value: $(params.git-url)
+        - name: revision
+          value: $(params.git-revision)
+        - name: subdirectory
+          value: ""
+        - name: deleteExisting
+          value: "true"
+      workspaces:
+        - name: output
+          workspace: source
+    
+    # Task 2: Build and Push Container Image using BuildKit
+    - name: build-image
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: "https://github.com/plantoncloud/tekton-hub.git"
+          - name: revision
+            value: "main"
+          - name: pathInRepo
+            value: "tasks/buildkit.yaml"
+      params:
+        - name: image
+          value: $(params.image-name)
+        - name: contextDir
+          value: $(params.project-root)
+        - name: dockerfilePath
+          value: $(params.dockerfile-path)
+      workspaces:
+        - name: source
+          workspace: source
+      runAfter:
+        - git-checkout
